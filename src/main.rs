@@ -44,13 +44,16 @@ use koine::*;
 use log::info;
 use openssl::asn1::Asn1Time;
 use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
+use openssl::x509::{X509, X509Ref};
+use openssl::pkey::{PKey, PKeyRef};
 use openssl::pkey::Private;
 use openssl::rsa::*;
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod, SslStream};
 use serde_cbor::{de, to_vec};
 use std::error::Error;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::net::{TcpListener, TcpStream};
 //#[cfg(unix)]
 use ciborium::de::from_reader;
 use sys_info::*;
@@ -83,13 +86,47 @@ async fn main() {
         listen_address.parse::<IpAddr>().unwrap(),
         listen_port.parse().unwrap(),
     );
-    let (server_key, server_cert) = get_credentials_bytes(listen_address);
-
+    //let (server_key, server_cert) = get_credentials_bytes(listen_address);
+    //let server_key_pkeyref: PKeyRef<Private> = PKey.from_pem(server_key);
+    //let server_cert_x509ref: X509Ref = X509.from_pem(server_cert);
+    //let (server_key_pkeyref, server_cert_x509ref) = generate_credentials(listen_address);
+    let keycertpair = generate_credentials(listen_address);
+    
     println!(
         "Current pem array = {}",
-        std::str::from_utf8(&server_cert.to_pem().unwrap()).unwrap()
+        std::str::from_utf8(&keycertpair.certificateref.to_pem().unwrap()).unwrap()
     );
+    let mut acceptor = SslAcceptor::mozilla_modern(SslMethod::tls()).unwrap();
+    acceptor.set_private_key(&keycertpair.pkeyref).unwrap();
+    acceptor.set_certificate(&keycertpair.certificateref).unwrap();
+    acceptor.check_private_key().unwrap();
+    let acceptor = acceptor.build();
 
+    let listener = TcpListener::bind(listen_socketaddr).unwrap();
+    //TODO - error checking!
+    let stream_raw: TcpStream = listener.incoming().next().unwrap().unwrap();
+    
+    let stream: SslStream<TcpStream> = acceptor.accept(stream_raw).unwrap();
+
+    let cbor_workload_res: Result<koine::Workload, _> = ciborium::de::from_reader(stream);
+    match cbor_workload_res {
+        Ok(workload) => {
+            //Exit after completion
+            std::process::exit(match create_new_runtime(&workload.wasm_binary) {
+                Ok(_) => {
+                    //println!("Success - exiting");
+                    0
+                }
+                Err(err) => {
+                    eprintln!("error: {:?}", err);
+                    1
+                }
+            });   
+        },
+        Err(e) => panic!("No valid workload received."),
+    }
+    //payload_launch();
+    /*
     // POST /workload
     let workload = warp::post()
         .and(warp::path("workload"))
@@ -103,6 +140,7 @@ async fn main() {
         .key(&server_key)
         .run(listen_socketaddr)
         .await;
+        */
 }
 
 fn create_new_runtime(recvd_data: &[u8]) -> Result<bool, String> {
@@ -169,6 +207,7 @@ async fn payload_launch<B: warp::Buf>(bytes: B) -> Result<impl warp::Reply, warp
     }
 }
 
+/* 
 fn get_credentials_bytes(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     let (key, cert) = match KEY_SOURCE {
         "generate" => (generate_credentials(&listen_addr)),
@@ -177,6 +216,7 @@ fn get_credentials_bytes(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     };
     (key, cert)
 }
+*/
 
 fn retrieve_existing_key() -> Option<Rsa<Private>> {
     //This function retrieves an existing key from the pre-launch
@@ -219,22 +259,22 @@ fn retrieve_existing_key() -> Option<Rsa<Private>> {
         //TODO - error checking
         //let key_bytes: &Vec<u8> = ciborium::de::from_reader(cbor_key_bytes.as_slice()).expect("problem with key serialisation");
 
-        let key_bytes_value: ciborium::value::Value = ciborium::de::from_reader(cbor_key_bytes.as_slice()).unwrap();
+        let key_bytes_value: ciborium::value::Value =
+            ciborium::de::from_reader(cbor_key_bytes.as_slice()).unwrap();
 
         let key_bytes = match key_bytes_value {
             ciborium::value::Value::Bytes(bytes) => bytes,
             _ => panic!("not bytes"),
         };
 
-
-        //TODO - move to der? 
+        //TODO - move to der?
         let key_result = openssl::rsa::Rsa::private_key_from_pem(&key_bytes);
         let key: Option<Rsa<Private>> = match key_result {
             Ok(key) => Some(key),
             Err(_) => {
                 println!("Error creating RSA private key from pem");
-                None   
-            },
+                None
+            }
         };
         println!("Key retrieved from attestation mechanism, successfully created RSA private key");
         key
@@ -244,7 +284,9 @@ fn retrieve_existing_key() -> Option<Rsa<Private>> {
 }
 
 //TODO - this is vital code, and needs to be carefully audited!
-fn generate_credentials(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
+//fn generate_credentials(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
+//fn generate_credentials(listen_addr: &str) -> (&PKeyRef<Private>, &X509Ref) {
+fn generate_credentials(listen_addr: &str) -> PKeyCertPair {
     //TODO - parameterise key_length?
     let key_length = 2048;
     let key_opt = retrieve_existing_key();
@@ -253,7 +295,7 @@ fn generate_credentials(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
         None => {
             println!("No key available, so generating one");
             Rsa::generate(key_length).unwrap()
-        },
+        }
     };
 
     let pkey = PKey::from_rsa(key.clone()).unwrap();
@@ -288,23 +330,36 @@ fn generate_credentials(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     x509_builder.set_subject_name(&x509_name).unwrap();
     x509_builder.set_pubkey(&pkey).unwrap();
     x509_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
-    let certificate = x509_builder.build();
+    let certificate: X509 = x509_builder.build();
     /*
     println!(
         "Current pem array = {}",
         std::str::from_utf8(&certificate.to_pem().unwrap()).unwrap()
     );
-     
+
     println!(
         "Private key = {}",
         std::str::from_utf8(&pkey.private_key_to_pem_pkcs8().unwrap()).unwrap()
     );
     */
+    let pkeycertpair = PKeyCertPair {
+        pkeyref: pkey,
+        certificateref: certificate,
+    };
+    pkeycertpair
+    // (pkey, certificate)
+    /*
     (
         //TODO - move to der
         key.private_key_to_pem().unwrap(),
         certificate.to_pem().unwrap(),
     )
+    */
+}
+
+struct PKeyCertPair {
+    pkeyref: PKey<Private>,
+    certificateref: X509,
 }
 
 #[derive(Debug)]
