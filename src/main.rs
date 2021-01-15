@@ -97,9 +97,9 @@ async fn main() {
         std::str::from_utf8(&keycertpair.certificateref.to_pem().unwrap()).unwrap()
     );
     let mut acceptor = SslAcceptor::mozilla_modern(SslMethod::tls()).unwrap();
-    acceptor.set_private_key(&keycertpair.pkeyref).unwrap();
-    acceptor.set_certificate(&keycertpair.certificateref).unwrap();
-    acceptor.check_private_key().unwrap();
+    acceptor.set_private_key(&keycertpair.pkeyref).expect("Problem setting private key");
+    acceptor.set_certificate(&keycertpair.certificateref).expect("Problem setting certificate");
+    acceptor.check_private_key().expect("Problem with private key check");
     let acceptor = acceptor.build();
 
     let listener = TcpListener::bind(listen_socketaddr).unwrap();
