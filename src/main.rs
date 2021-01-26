@@ -47,6 +47,7 @@ use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::pkey::Private;
 use openssl::rsa::*;
+use openssl::x509::X509Extension;
 use serde_cbor::{de, to_vec};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
@@ -236,99 +237,111 @@ fn get_credentials_bytes(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     (key, cert)
 }
 
-fn retrieve_existing_key() -> Option<Rsa<Private>> {
+fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
     //This function retrieves an existing key from the pre-launch
-    // attestation in the case of AMD SEV
+    // attestation in the case of AMD SEV or generates a keypair for
+    // hashing (of the public key) in the SGX case.  In the non-TEE
+    // case, a private key is generated for use in the certificate
+    //TODO - parameterise key_length?
+    let key_length = 2048;
+    let key: Rsa<Private> = Rsa::generate(key_length).unwrap();
+
     let input_bytes: &[u8] = &Vec::new();
     let mut output_bytes = vec![0; 0];
+    let expected_response_length: usize;
+    let backend_type: koine::Backend;
     //println!("output_bytes has length {}", output_bytes.len());
-    let expected_key_length: usize = match attestation::attest(&input_bytes, &mut output_bytes) {
+    match attestation::attest(&input_bytes, &mut output_bytes) {
         Ok(attestation) => {
             //println!("Attestation OK");
             match attestation {
-                attestation::Attestation::Sev(expected_key_length) => expected_key_length,
-                attestation::Attestation::Sgx(_) => 0,
-                attestation::Attestation::None => 0,
+                attestation::Attestation::Sev(erl) => {
+                    expected_response_length = erl;
+                    backend_type = Backend::Sev;
+                },
+                attestation::Attestation::Sgx(erl) => {
+                    expected_response_length = erl;
+                    backend_type = Backend::Sgx;
+                },
+                attestation::Attestation::None => {
+                    //NOTE - Nil and Kvm are equivalent in this context
+                    expected_response_length = 0;
+                    backend_type = Backend::Nil;
+                },
             }
         }
-        Err(_) => 0,
+        //FIXME - deal with errors
+        Err(_) => {
+            expected_response_length = 0;
+            backend_type = Backend::Nil;
+        },
     };
-    //println!("Expected key length = {}", expected_key_length);
-    if expected_key_length > 0 {
-        let mut cbor_key_bytes: Vec<u8> = vec![0; expected_key_length];
-        /*
-        println!(
-            "Ready to receive key_bytes, which has length {} ({} expected)",
-            cbor_key_bytes.len(),
-            expected_key_length,
-        );
-        */
-        let _attempted_attestation_result =
-            attestation::attest(&input_bytes, &mut cbor_key_bytes).unwrap();
-        /*
-        println!(
-            "Byte array retrieved from attestation, {} bytes",
-            cbor_key_bytes.len()
-        );
-        */
-        //println!("Bytes = {:?}", &cbor_key_bytes);
-
-        //TODO - error checking
-        let key_bytes_value: ciborium::value::Value =
-            ciborium::de::from_reader(cbor_key_bytes.as_slice()).unwrap();
-
-        let key_bytes = match key_bytes_value {
-            ciborium::value::Value::Bytes(bytes) => bytes,
-            _ => panic!("not bytes"),
-        };
-
-        //TODO - move to der?
-        let key_result = openssl::rsa::Rsa::private_key_from_pem(&key_bytes);
-        let key: Option<Rsa<Private>> = match key_result {
-            Ok(key) => Some(key),
-            Err(_) => {
-                println!("[keepldr] Error creating RSA private key from pem");
-                None
-            }
-        };
-        println!("[keepldr] Key retrieved from attestation, RSA key created");
-        key
-    } else {
-        None
+    match backend_type {
+        Backend::Sev => {
+            let mut cbor_key_bytes: Vec<u8> = vec![0; expected_response_length];
+            /*
+            println!(
+                "Ready to receive key_bytes, which has length {} ({} expected)",
+                cbor_key_bytes.len(),
+                expected_key_length,
+            );
+            */
+            let _attempted_attestation_result =
+                attestation::attest(&input_bytes, &mut cbor_key_bytes).unwrap();
+            /*
+            println!(
+                "Byte array retrieved from attestation, {} bytes",
+                cbor_key_bytes.len()
+            );
+            */
+            //println!("Bytes = {:?}", &cbor_key_bytes);
+            //TODO - error checking
+            let key_bytes_value: ciborium::value::Value =
+                ciborium::de::from_reader(cbor_key_bytes.as_slice()).unwrap();
+    
+            let key_bytes = match key_bytes_value {
+                ciborium::value::Value::Bytes(bytes) => bytes,
+                _ => panic!("not bytes"),
+            };
+    
+            //TODO - move to der?
+            let key_result = openssl::rsa::Rsa::private_key_from_pem(&key_bytes);
+            let key: Rsa<Private> = match key_result {
+                Ok(key) => key,
+                Err(_) => {
+                    println!("[keepldr] Error creating RSA private key from pem");
+                    panic!("No key available");
+                }
+            };
+            println!("[keepldr] Key retrieved from attestation, RSA key created");
+            (key, None)
+        }
+        //TODO - implement!
+        Backend::Sgx => (key, None),
+        Backend::Nil => (key, None),
+        Backend::Kvm => (key, None),
     }
+ 
 }
 
 //TODO - this is vital code, and needs to be carefully audited!
 fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
-    //TODO - parameterise key_length?
-    let key_length = 2048;
-    let key_opt = retrieve_existing_key();
-    let key: Rsa<Private> = match key_opt {
-        Some(key) => key,
-        None => {
-            println!("[keepldr] No key available, so generating one");
-            Rsa::generate(key_length).unwrap()
-        }
-    };
-
+    let (key, attestation_data_opt) = retrieve_attestation_data();
+    
     let pkey = PKey::from_rsa(key.clone()).unwrap();
-
     //let myhostname = hostname().unwrap();
     //FIXME - need to fix this!
     let myhostname = String::from("rome.sev.lab.enarx.dev");
     let mut x509_name = openssl::x509::X509NameBuilder::new().unwrap();
     x509_name.append_entry_by_text("C", "GB").unwrap();
     x509_name.append_entry_by_text("O", "enarx-test").unwrap();
-
     x509_name.append_entry_by_text("CN", &myhostname).unwrap();
     //TODO - include SGX case, where we're adding public key (?) information
     //       to this cert
+    //x509_name.append_entry_by_text("pubkeyhash", ).unwrap();
     let x509_name = x509_name.build();
     let mut x509_builder = openssl::x509::X509::builder().unwrap();
-    //from haraldh
     x509_builder.set_issuer_name(&x509_name).unwrap();
-
-    //from haraldh
     //FIXME - this sets certificate creation to daily granularity - need to deal with
     // occasions when we might straddle the date
     let t = SystemTime::now()
@@ -346,6 +359,21 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     x509_builder.set_subject_name(&x509_name).unwrap();
     x509_builder.set_pubkey(&pkey).unwrap();
     x509_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+    //TODO - check formatting
+    match attestation_data_opt {
+        Some(attestation_data) => {    
+            let ext_name = "attestation data";
+            let att_data_as_string = format!("{:?}", &attestation_data);
+            let att_data_extension = X509Extension::new(
+                None,
+                None,
+                &ext_name,
+                &att_data_as_string
+            ).unwrap();
+            x509_builder.append_extension(att_data_extension);
+        },
+        None => {},
+    }
     let certificate = x509_builder.build();
     println!("[keepldr] Created a certificate for {}", &myhostname);
     /*
