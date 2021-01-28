@@ -47,7 +47,8 @@ use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::pkey::Private;
 use openssl::rsa::*;
-use openssl::x509::X509Extension;
+use openssl::sha;
+use openssl::x509::*;
 use serde_cbor::{de, to_vec};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
@@ -317,7 +318,21 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
             (key, None)
         }
         //TODO - implement!
-        Backend::Sgx => (key, None),
+        Backend::Sgx => {
+            //send hash of public key (sha-256) to attest function
+            //we already have private key
+            //output from attest function out in Option<>
+            //TODO - get public key bytes
+            let pub_key_pem = key.public_key_to_pem().unwrap();
+            let mut quote_bytes: Vec<u8> = vec![0; expected_response_length];
+            let mut hasher = sha::Sha256::new();
+            hasher.update(&pub_key_pem);
+            let pub_key_hash = hasher.finish();
+            let _attempted_attestation_result =
+                attestation::attest(&pub_key_hash, &mut quote_bytes).unwrap();
+            println!("[keepldr] Quote received from Sgx attestation");
+            (key, Some(quote_bytes))
+        },
         Backend::Nil => (key, None),
         Backend::Kvm => (key, None),
     }
@@ -335,11 +350,27 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     let mut x509_name = openssl::x509::X509NameBuilder::new().unwrap();
     x509_name.append_entry_by_text("C", "GB").unwrap();
     x509_name.append_entry_by_text("O", "enarx-test").unwrap();
-    x509_name.append_entry_by_text("CN", &myhostname).unwrap();
-    //TODO - include SGX case, where we're adding public key (?) information
-    //       to this cert
-    //x509_name.append_entry_by_text("pubkeyhash", ).unwrap();
+    match attestation_data_opt {
+        Some(attestation_data) => {    
+            //FIXME - improve placement for this
+            //it may be cleaner to add an extension, but accessing them may be tricky
+            let ext_name = "attestation_data";
+            let att_data_as_string = base64::encode(&attestation_data);
+            x509_name.append_entry_by_text("CN", &att_data_as_string);
+            /*
+            let att_data_extension = X509Extension::new(
+                None,
+                None,
+                &ext_name,
+                &att_data_as_string
+            ).unwrap();
+            x509_builder.append_extension(att_data_extension);
+            */
+        },
+        None => {},
+    }
     let x509_name = x509_name.build();
+
     let mut x509_builder = openssl::x509::X509::builder().unwrap();
     x509_builder.set_issuer_name(&x509_name).unwrap();
     //FIXME - this sets certificate creation to daily granularity - need to deal with
@@ -358,22 +389,10 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     }
     x509_builder.set_subject_name(&x509_name).unwrap();
     x509_builder.set_pubkey(&pkey).unwrap();
-    x509_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
     //TODO - check formatting
-    match attestation_data_opt {
-        Some(attestation_data) => {    
-            let ext_name = "attestation data";
-            let att_data_as_string = format!("{:?}", &attestation_data);
-            let att_data_extension = X509Extension::new(
-                None,
-                None,
-                &ext_name,
-                &att_data_as_string
-            ).unwrap();
-            x509_builder.append_extension(att_data_extension);
-        },
-        None => {},
-    }
+    //TODO - use issuer_name instead?
+    
+    x509_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
     let certificate = x509_builder.build();
     println!("[keepldr] Created a certificate for {}", &myhostname);
     /*
