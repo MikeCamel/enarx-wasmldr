@@ -350,13 +350,14 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     let mut x509_name = openssl::x509::X509NameBuilder::new().unwrap();
     x509_name.append_entry_by_text("C", "GB").unwrap();
     x509_name.append_entry_by_text("O", "enarx-test").unwrap();
+    x509_name.append_entry_by_text("CN", &myhostname).unwrap();
     match attestation_data_opt {
         Some(attestation_data) => {    
             //FIXME - improve placement for this
             //it may be cleaner to add an extension, but accessing them may be tricky
             let ext_name = "attestation_data";
             let att_data_as_string = base64::encode(&attestation_data);
-            x509_name.append_entry_by_text("CN", &att_data_as_string);
+            x509_name.append_entry_by_text("userCertificate", &base64::encode(&attestation_data)).unwrap();
             /*
             let att_data_extension = X509Extension::new(
                 None,
