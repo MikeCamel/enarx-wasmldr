@@ -341,7 +341,7 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
 
 //TODO - this is vital code, and needs to be carefully audited!
 fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
-    let (key, attestation_data_opt) = retrieve_attestation_data();
+    let (key, attestation_data_opt) = pubeve_attestation_data();
     
     let pkey = PKey::from_rsa(key.clone()).unwrap();
     //let myhostname = hostname().unwrap();
@@ -355,8 +355,6 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
         Some(attestation_data) => {    
             //FIXME - improve placement for this
             //it may be cleaner to add an extension, but accessing them may be tricky
-            let ext_name = "attestation_data";
-            let att_data_as_string = base64::encode(&attestation_data);
             x509_name.append_entry_by_text("userCertificate", &base64::encode(&attestation_data)).unwrap();
             /*
             let att_data_extension = X509Extension::new(
