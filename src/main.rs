@@ -341,7 +341,7 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
 
 //TODO - this is vital code, and needs to be carefully audited!
 fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
-    let (key, attestation_data_opt) = pubeve_attestation_data();
+    let (key, attestation_data_opt) = retrieve_attestation_data();
     
     let pkey = PKey::from_rsa(key.clone()).unwrap();
     //let myhostname = hostname().unwrap();
