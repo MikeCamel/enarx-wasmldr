@@ -93,8 +93,8 @@ async fn main() {
     //FIXME - hard-coding for now
     //    let listen_address: &str = "127.0.0.1";
     //let listen_address: &str = "192.168.1.203";
-    //This is the IP address of rome.sev.lab.enarx.dev (2021-01-07)
-    let listen_address: &str = "147.75.68.181";
+    //This is the IP address of coffeelake.sgx.lab.enarx.dev (2021-01-31)
+    let listen_address: &str = "147.75.68.177";
     //    let listen_address: &str = &args[0];
     //FIXME - hard-coding for now
     let listen_port: &str = "3040";
@@ -346,7 +346,7 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     let pkey = PKey::from_rsa(key.clone()).unwrap();
     //let myhostname = hostname().unwrap();
     //FIXME - need to fix this!
-    let myhostname = String::from("rome.sev.lab.enarx.dev");
+    let myhostname = String::from("coffeelake.sgx.lab.enarx.dev");
     let mut x509_name = openssl::x509::X509NameBuilder::new().unwrap();
     x509_name.append_entry_by_text("C", "GB").unwrap();
     x509_name.append_entry_by_text("O", "enarx-test").unwrap();
@@ -356,7 +356,10 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
             //FIXME - improve placement for this
             //it may be cleaner to add an extension, but accessing them may be tricky
             x509_name.append_entry_by_text("userCertificate", &base64::encode(&attestation_data)).unwrap();
+            
             /*
+            let ext_name = String::from("sgx-attestation-data");
+            let att_data_as_string = &base64::encode(&attestation_data);
             let att_data_extension = X509Extension::new(
                 None,
                 None,
