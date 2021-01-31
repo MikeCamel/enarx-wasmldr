@@ -81,6 +81,7 @@ impl Trigger {
 #[cfg(unix)]
 #[tokio::main(basic_scheduler)]
 async fn main() {
+    println!("[wasmldr] main() called");
     //This required when calling from Rust std::process::command.  Recorded
     // to allow debugging.
     //    let args: Vec<String> = std::env::args().skip(1).collect();
@@ -99,7 +100,7 @@ async fn main() {
     //FIXME - hard-coding for now
     let listen_port: &str = "3040";
     //    let listen_port: &str = &args[1];
-
+    println!("[wasmldr] About to listen on {}:{}", &listen_address, listen_port);
     let listen_socketaddr = SocketAddr::new(
         listen_address.parse::<IpAddr>().unwrap(),
         listen_port.parse().unwrap(),
@@ -239,19 +240,22 @@ fn get_credentials_bytes(listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
 }
 
 fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
+    println!("[wasmldr] generate_attestation_data() called");
     //This function retrieves an existing key from the pre-launch
     // attestation in the case of AMD SEV or generates a keypair for
     // hashing (of the public key) in the SGX case.  In the non-TEE
     // case, a private key is generated for use in the certificate
     //TODO - parameterise key_length?
     let key_length = 2048;
+    
     let key: Rsa<Private> = Rsa::generate(key_length).unwrap();
 
+    println!("[wasmldr] Successfully generated private key");
     let input_bytes: &[u8] = &Vec::new();
     let mut output_bytes = vec![0; 0];
     let expected_response_length: usize;
     let backend_type: koine::Backend;
-    //println!("output_bytes has length {}", output_bytes.len());
+    println!("[wasmldr] - about to perform attestation call");
     match attestation::attest(&input_bytes, &mut output_bytes) {
         Ok(attestation) => {
             //println!("Attestation OK");
@@ -277,6 +281,7 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
             backend_type = Backend::Nil;
         },
     };
+    println!("[wasmldr] attestation call successful, expected_response_length = {}", expected_response_length);
     match backend_type {
         Backend::Sev => {
             let mut cbor_key_bytes: Vec<u8> = vec![0; expected_response_length];
@@ -317,7 +322,6 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
             println!("[keepldr] Key retrieved from attestation, RSA key created");
             (key, None)
         }
-        //TODO - implement!
         Backend::Sgx => {
             //send hash of public key (sha-256) to attest function
             //we already have private key
@@ -341,6 +345,7 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
 
 //TODO - this is vital code, and needs to be carefully audited!
 fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
+    println!("[wasmldr] generate_credentials() called");
     let (key, attestation_data_opt) = retrieve_attestation_data();
     
     let pkey = PKey::from_rsa(key.clone()).unwrap();
