@@ -39,6 +39,7 @@ uuid =  { version = "0.8", features = ["serde", "v4"] }
 chrono = { version = "0.4.19", features = ["serde"] }
 reqwest = { version = "0.10.7", features = ["blocking", "json", "native-tls"] }
 rand = "0.7.3"
+#rand = { version = "0.7.3", features = ["getrandom"] }
 ciborium = { git = "https://github.com/enarx/ciborium" }
 
 futures = "0.3.12"
@@ -55,6 +56,8 @@ http = "0.2"
 serde_yaml = "0.8"
 
 openssl = { version = "0.10", features = ["vendored"] }
+libc = "0.2.84"
+
 tar = "0.4"
 tempfile = "3"
 clap = "2.33"

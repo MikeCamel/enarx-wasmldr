@@ -81,6 +81,9 @@ impl Trigger {
 #[cfg(unix)]
 #[tokio::main(basic_scheduler)]
 async fn main() {
+    //NOTE - this forces use of rdrand, required by SGX
+    unsafe {  RAND_set_rand_method(&RDRAND_METH)  };
+    
     println!("[wasmldr] main() called");
     //This required when calling from Rust std::process::command.  Recorded
     // to allow debugging.
@@ -163,7 +166,7 @@ fn create_new_runtime(recvd_data: &[u8]) -> Result<bool, String> {
 }
 
 fn payload_run_sync(workload_data: &[u8]) -> bool {
-    println!("[keepldr] About to run received workload");
+    println!("[wasmldr] About to run received workload");
     std::process::exit(match create_new_runtime(&workload_data) {
         Ok(_) => {
             //println!("Success - exiting");
@@ -198,7 +201,7 @@ async fn payload_load<B: warp::Buf>(
         Ok(wl) => {
             workload = wl;
             println!(
-                "[keepldr] Received a workload: {}",
+                "[wasmldr] Received a workload: {}",
                 workload.human_readable_info
             );
             /*
@@ -223,7 +226,7 @@ async fn payload_load<B: warp::Buf>(
             }
         }
         Err(_) => {
-            println!("[keepldr] Payload parsing problem");
+            println!("[wasmldr] Payload parsing problem");
             let cbore = LocalCborErr::new("Payload parsing problem");
             Err(warp::reject::custom(cbore))
         }
@@ -246,6 +249,8 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
     // hashing (of the public key) in the SGX case.  In the non-TEE
     // case, a private key is generated for use in the certificate
     //TODO - parameterise key_length?
+    
+ 
     let key_length = 2048;
     
     let key: Rsa<Private> = Rsa::generate(key_length).unwrap();
@@ -261,14 +266,17 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
             //println!("Attestation OK");
             match attestation {
                 attestation::Attestation::Sev(erl) => {
+                    println!("[wasmldr] - sev attestation call");
                     expected_response_length = erl;
                     backend_type = Backend::Sev;
                 },
                 attestation::Attestation::Sgx(erl) => {
+                    println!("[wasmldr] - sgx attestation call");
                     expected_response_length = erl;
                     backend_type = Backend::Sgx;
                 },
                 attestation::Attestation::None => {
+                    println!("[wasmldr] - nil attestation call");
                     //NOTE - Nil and Kvm are equivalent in this context
                     expected_response_length = 0;
                     backend_type = Backend::Nil;
@@ -277,6 +285,7 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
         }
         //FIXME - deal with errors
         Err(_) => {
+            println!("[wasmldr] Attestation call failed");
             expected_response_length = 0;
             backend_type = Backend::Nil;
         },
@@ -315,11 +324,11 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
             let key: Rsa<Private> = match key_result {
                 Ok(key) => key,
                 Err(_) => {
-                    println!("[keepldr] Error creating RSA private key from pem");
+                    println!("[wasmldr] Error creating RSA private key from pem");
                     panic!("No key available");
                 }
             };
-            println!("[keepldr] Key retrieved from attestation, RSA key created");
+            println!("[wasmldr] Key retrieved from attestation, RSA key created");
             (key, None)
         }
         Backend::Sgx => {
@@ -334,7 +343,7 @@ fn retrieve_attestation_data() -> (Rsa<Private>, Option<Vec<u8>>) {
             let pub_key_hash = hasher.finish();
             let _attempted_attestation_result =
                 attestation::attest(&pub_key_hash, &mut quote_bytes).unwrap();
-            println!("[keepldr] Quote received from Sgx attestation");
+            println!("[wasmldr] Quote received from Sgx attestation");
             (key, Some(quote_bytes))
         },
         Backend::Nil => (key, None),
@@ -401,7 +410,7 @@ fn generate_credentials(_listen_addr: &str) -> (Vec<u8>, Vec<u8>) {
     
     x509_builder.sign(&pkey, MessageDigest::sha256()).unwrap();
     let certificate = x509_builder.build();
-    println!("[keepldr] Created a certificate for {}", &myhostname);
+    println!("[wasmldr] Created a certificate for {}", &myhostname);
     /*
     println!(
         "Current pem array = {}",
@@ -446,3 +455,54 @@ impl Error for LocalCborErr {
 }
 
 impl warp::reject::Reject for LocalCborErr {}
+
+
+//To ensure use of rdrand
+extern "C" fn get_hardware_random_value(buf: *mut u8, len: libc::c_int) -> libc::c_int {
+    let trusted = unsafe { std::slice::from_raw_parts_mut(buf, len as _) };
+
+    for chunk in trusted.chunks_mut(8) {
+        let mut el = 0u64;
+        loop {
+            if unsafe { core::arch::x86_64::_rdrand64_step(&mut el) } == 1 {
+                chunk.copy_from_slice(&el.to_ne_bytes()[..chunk.len()]);
+                break;
+            }
+        }
+    }
+
+    return len;
+}
+
+extern "C" fn random_status() -> libc::c_int {
+    return 1;
+}
+
+#[repr(C)]
+struct RandMethSt {
+    seed: Option<extern "C" fn(buf: *mut u8, num: libc::c_int) -> libc::c_int>,
+    bytes: Option<extern "C" fn(buf: *mut u8, num: libc::c_int) -> libc::c_int>,
+    cleanup: Option<extern "C" fn()>,
+    add: Option<
+        extern "C" fn(
+            buf: *const libc::c_void,
+            num: libc::c_int,
+            randomness: libc::c_double,
+        ) -> libc::c_int,
+    >,
+    pseudorand: Option<extern "C" fn(buf: *mut u8, num: libc::c_int) -> libc::c_int>,
+    status: Option<extern "C" fn() -> libc::c_int>,
+}
+
+extern "C" {
+    fn RAND_set_rand_method(meth: *const RandMethSt) -> libc::c_int;
+}
+
+const RDRAND_METH: RandMethSt = RandMethSt {
+    seed: None,
+    bytes: Some(get_hardware_random_value),
+    cleanup: None,
+    add: None,
+    pseudorand: Some(get_hardware_random_value),
+    status: Some(random_status),
+};
